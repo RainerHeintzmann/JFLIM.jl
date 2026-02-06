@@ -170,6 +170,7 @@ function get_fwd_val(to_fit, all_start, irf, mytimes; stat=loss_gaussian, bgnois
     fwd =  get_fwd(to_fit, irf, mytimes) # , tmp_decays, result
     start_vals, fixed_vals, forward, backward, get_fit_results = create_forward(fwd, all_start);
     myloss = loss(to_fit, forward, stat, bgnoise);
+    # @show size(start_vals)
     return myloss(start_vals)
 end
 
@@ -280,9 +281,11 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
     end
 
     sigma = 0f0
+    time_dim = ndims(to_fit)
+    tau_dim = time_dim + 1
     if isa(irf, Number) # generate a Gaussian IRF
         sigma = Float32(irf)
-        irf = JFLIM.normal(Float32, (1,1,1,size(to_fit,4)), sigma=sigma)
+        irf = JFLIM.normal(Float32, (1,1,1,size(to_fit, time_dim)), sigma=sigma)
         irf = irf ./ sum(irf, dims=4) # changes datatype
     elseif isa(irf, Array)
         sigma = 2f0
@@ -301,7 +304,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
             tau_start = mean(tau_start,dims=(1, 2)) # 25f0 .* ones(Float32, img_size)
         end
         if isnothing(amp_start)
-            amp_start = max.(1e-8, sum(to_fit_no_offset, dims=4)./tau_start)./ size(tau_start,3) # due to the integral of the exponential decay
+            amp_start = max.(1f-8, sum(to_fit_no_offset, dims=time_dim)./tau_start)./ size(tau_start,3) # due to the integral of the exponential decay
         end
 
         if num_exponents > 1 # split the estimations into different exponents
@@ -312,15 +315,20 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
                 tau_start[:,:,:,:,n] *= (n-0.5f0) # /num_exponents
             end
         end
-    else
+    else # tau_start is given
         if (size(tau_start,5) > num_exponents)            
             tau_start = tau_start[:,:,:,:,1:num_exponents]
         end
-        if (size(tau_start,3) > size(to_fit,3))            
+        if (size(tau_start,3) > size(to_fit,3))
             tau_start = tau_start[:,:,1:size(to_fit,3),:,:]
         end
         if isnothing(amp_start)
-            amp_start = max.(1e-8, sum(to_fit_no_offset, dims=4)./tau_start) ./ size(tau_start,3) # due to the integral of the exponential decay
+            @show size(to_fit_no_offset)
+            # due to the integral of the exponential decay  being tau_start           
+            time_max = min(size(to_fit_no_offset, time_dim), 2*round(Int, mean(tau_start)));
+            to_sum = @view to_fit_no_offset[:,:,:,1:time_max];
+            amp_start = max.(1f-8, sum(to_sum, dims=time_dim)./tau_start) ./ size(tau_start, tau_dim) 
+            # amp_start ./= size(tau_start, tau_dim) # split equally over the different exponents
         end
         if (size(amp_start,5) > num_exponents)            
             amp_start = amp_start[:,:,:,:,1:num_exponents]
@@ -348,7 +356,9 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         scale_factor = Float32.(scale_factor)
         println("scale factor is: $(scale_factor)")
         if (verbose)
+            @show size(amp_start)
             all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
+            @show all_start
             println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes; stat = stat, bgnoise=bgnoise))
         end
         to_fit = to_fit ./ scale_factor
