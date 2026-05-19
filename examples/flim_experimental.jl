@@ -36,10 +36,10 @@ function main()
     use_cuda = true
     amp_positive = true
     # first fit with fixed taus and gaussian noise
-    res, fwd = flim_fit(to_fit, ScaleMaximum(); use_cuda = use_cuda, verbose=true, stat=loss_gaussian, iterations=30, num_exponents=2,
+    res, fwd = flim_fit(to_fit, ScaleMaximum(); use_cuda = use_cuda, verbose=true, stat=loss_gaussian, iterations=30, num_exponents=3,
                         fixed_tau=true, global_tau=true, amp_positive=amp_positive,
                         # tau_start=reorient([10f0, 20f0], Val(5)),
-                        off_start=0.0001f0, bgnoise=1f0);
+                        off_start=0.02f0, bgnoise=0.1f0);
     res[:τs] 
 
     # ... and then improve the fit with free global taus and poisson or anscombe noise. reuse the previous result as starting point
