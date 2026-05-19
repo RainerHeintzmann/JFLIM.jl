@@ -14,7 +14,7 @@ function simulate_flim_data(img1, img2, ntimes, tau1, tau2)
 end
 
 function main()
-    ISM = nothing, img1 = nothing, img2 = nothing, to_fit=nothing
+    ISM = nothing; img1 = nothing; img2 = nothing; to_fit=nothing
     if (false)
         ISM = readdlm("ISMdata.txt")
         ISM = reshape(ISM, (512, 512, 256))
@@ -32,6 +32,7 @@ function main()
     # mytimes = (1:size(to_fit, 4)) *20f0
 
 
+    use_cuda = false
     use_cuda = true
     amp_positive = true
     # first fit with fixed taus and gaussian noise

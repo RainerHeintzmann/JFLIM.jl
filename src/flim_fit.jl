@@ -358,7 +358,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         if (verbose)
             @show size(amp_start)
             all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
-            @show all_start
+            # @show all_start
             println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes; stat = stat, bgnoise=bgnoise))
         end
         to_fit = to_fit ./ scale_factor
