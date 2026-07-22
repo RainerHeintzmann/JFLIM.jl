@@ -75,3 +75,49 @@ function show_fit_log(to_fit, fit, Δt=12.5/1024; positions=(size(to_fit)[1:2].�
 
     display(p)
 end
+
+"""
+    show_flim(res, binsize=1; tau_min=nothing, tau_max = nothing, gamma=1.0, colorbar_title = "lifetime / ps")
+
+displays a FLIM result image using the weighted averaging of the amplitudes of the fit result `res`.
+"""
+function show_flim(res, binsize=1; tau_min=nothing, tau_max = nothing, gamma=1.0, colorbar_title = "lifetime / bins")
+    num_col = size(res[:τs],5)
+
+    amp_img = sum(res[:amps], dims=5)[:,:,1,1,1]
+    amp_img ./= maximum(amp_img)
+    amp_img .= amp_img .^gamma
+
+    tau_mean = binsize .* (sum(res[:amps] .* res[:τs], dims=5) ./ sum(res[:amps], dims=5))[:,:,1,1,1]
+    tau_min = (isnothing(tau_min)) ? minimum(binsize .* res[:τs]) : tau_min
+    tau_max = (isnothing(tau_min)) ? maximum(binsize .* res[:τs]) : tau_max
+
+    cmap = cgrad(:lighttest)
+
+    # Convert brightness to RGB colors
+    img = [begin
+        c = cmap[(tau_mean[i,j] .- tau_min)./(tau_max .- tau_min)]                # base color from colormap
+        RGB(amp_img[i,j] * red(c), amp_img[i,j] * green(c), amp_img[i,j] * blue(c))
+        end for i in axes(amp_img,1), j in axes(amp_img,2)]
+
+    # Display image
+    p1 = plot(img, axis=nothing, ticks=nothing, border=:none)
+
+    # Dummy heatmap just for the colorbar
+    p2 = heatmap(
+        fill(NaN, size(amp_img)),
+        clim=(tau_min,tau_max),
+        c=:lighttest,
+        colorbar=true,
+        framestyle=:none,
+        grid=false,
+        axis=nothing,
+        colorbar_title = colorbar_title
+    )
+
+    FLIM_fig = plot(p1, p2, layout=@layout([a{0.9w} b{0.1w}]))
+
+    # FLIM_fig = heatmap(transpose(tau_mean), axis = false, color = :lighttest, clim = (t1_real, t3_real), colorlegend="average lifetime / ps")
+    display(FLIM_fig)
+    return FLIM_fig
+end

@@ -2,7 +2,7 @@ module JFLIM
 
 using Statistics, BioformatsLoader, CUDA, NDTools, FourierTools, IndexFunArrays
 using InverseModeling
-using Plots 
+using Plots, Colors
 using MicroscopyTools # for soft_delta
 # using DeconvOptim # for conv_aux
 using ChainRulesCore

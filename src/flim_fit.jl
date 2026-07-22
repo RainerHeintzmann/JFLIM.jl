@@ -102,7 +102,14 @@ function multi_exp(params, time_data) # , tmp_decays, result)
     return result
 end
 
-function multi_exp_irf(params, time_data) #, tmp_decays, result)
+"""
+    multi_exp_irf(params, time_data, period) #, tmp_decays, result)
+
+simulates a wrap-around multi-exponential decay.
+# arguments
++ `period`: The wrap around period. Normally this corresponds to the time span of the data, but can also be different, depending on the rep rate and chosen ROI.
+"""
+function multi_exp_irf(params, time_data, period) #, tmp_decays, result)
     t0 = params(:t0)
     offset = params(:offset)
     amps = params(:amps)
@@ -113,7 +120,10 @@ function multi_exp_irf(params, time_data) #, tmp_decays, result)
 
     # forward = (vec) -> DeconvOptim.conv_aux(conv, multi_exp(time_data, merge(NamedTuple(vec),fixed_val)), otf)
 # otf, conv = plan_conv_r(irf_n, measured, 1);
-    tmp_decays = MicroscopyTools.soft_theta_pw.(time_data .- t0, 1.0f0) .* exp.(.- (time_data.-t0)./ τs)
+    # cyclic_time = mod.(time_data .- t0, period) 
+    cyclic_time = time_data .- t0 
+    tmp_decays = MicroscopyTools.soft_theta_pw.(cyclic_time, 1.0f0) .* exp.(.- (cyclic_time)./ τs) .+
+                 (1 .- MicroscopyTools.soft_theta_pw.(time_data .- t0, 1.0f0)) .* exp.(.- (period .+ time_data.-t0)./ τs)
 
     result = @view sum(offset .+ amps .* tmp_decays, dims=5)[:,:,:,:,1]
     # @show size(tmp_decays)
@@ -147,7 +157,7 @@ function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed
     return all_start
 end
 
-function get_fwd(to_fit, irf, mytimes) # , tmp_decays, result)
+function get_fwd(to_fit, irf, mytimes, period) # , tmp_decays, result)
     if isnothing(irf)
         return (vec) -> multi_exp(vec, mytimes) #, tmp_decays, result);
     else
@@ -161,13 +171,13 @@ function get_fwd(to_fit, irf, mytimes) # , tmp_decays, result)
         # @show size(to_fit)
         # @show size(irf)
         otf, pconv = plan_conv_psf(to_fit, irf, 4); # allocates an array internally        
-        return (vec) -> conv_aux(pconv, multi_exp_irf(vec, mytimes), otf); # somehow inlining this function is causins an internal Zygote error
+        return (vec) -> conv_aux(pconv, multi_exp_irf(vec, mytimes, period), otf); # somehow inlining this function is causing an internal Zygote error
         # doconv
     end
 end
 
-function get_fwd_val(to_fit, all_start, irf, mytimes; stat=loss_gaussian, bgnoise=2f0) # , tmp_decays, result
-    fwd =  get_fwd(to_fit, irf, mytimes) # , tmp_decays, result
+function get_fwd_val(to_fit, all_start, irf, mytimes, period; stat=loss_gaussian, bgnoise=2f0) # , tmp_decays, result
+    fwd =  get_fwd(to_fit, irf, mytimes, period) # , tmp_decays, result
     start_vals, fixed_vals, forward, backward, get_fit_results = create_forward(fwd, all_start);
     myloss = loss(to_fit, forward, stat, bgnoise);
     # @show size(start_vals)
@@ -181,9 +191,9 @@ function alloc_memory(to_fit, all_start)
     return tmp_decays, result
 end
 
-# function get_fwd_val(to_fit, all_start, irf, mytimes; stat=loss_gaussian, bgnoise=2f0)
+# function get_fwd_val(to_fit, all_start, irf, mytimes, period; stat=loss_gaussian, bgnoise=2f0)
 #     # tmp_decays, result = alloc_memory(to_fit, all_start)
-#     return get_fwd_val(to_fit, all_start, irf, mytimes; stat=stat, bgnoise=bgnoise)
+#     return get_fwd_val(to_fit, all_start, irf, mytimes, period; stat=stat, bgnoise=bgnoise)
 # end
 
 """
@@ -191,9 +201,9 @@ end
 
 performs the fit of `to_fit` with the starting amplitudes `amp_start` and the lifetimes `tau_start`.
 """
-function do_fit(to_fit, all_start; mytimes=0:size(to_fit,4)-1, iterations=20, stat=loss_gaussian, bgnoise=2f0, verbose=true, irf=nothing, fixed_tau=true)
+function do_fit(to_fit, all_start; mytimes=0:size(to_fit,4)-1, period=size(to_fit,4), iterations=20, stat=loss_gaussian, bgnoise=2f0, verbose=true, irf=nothing, fixed_tau=true)
     # tmp_decays, result = alloc_memory(to_fit, all_start);
-    fwd = get_fwd(to_fit, irf, mytimes); #, tmp_decays, result
+    fwd = get_fwd(to_fit, irf, mytimes, period); #, tmp_decays, result
     # fwd = let 
     #     if isnothing(irf)
     #         (vec) -> multi_exp(vec, mytimes);
@@ -248,7 +258,7 @@ is_pos(x) = all(x .>= 0)
 
 Fit the FLIM data `measured` with a (multi-)exponential decay model.
 The function returns the fit parameters and the fit itself.
-All results are in time bins as units.
+All results are in time bins as temporal units.
 
 # Arguments
 - `to_fit::Array{Float32, 4}`: The measured data to fit.
@@ -257,21 +267,25 @@ All results are in time bins as units.
 - `stat::Function=loss_poisson`: The loss function to use for the fitting.
 - `iterations::Int=10`: The number of iterations to perform.
 - `irf::Union{Nothing, Array{Float32, 4}}=nothing`: The instrument response function (IRF) to use for the fitting.
+            If the `irf` is a number, a Gaussian with that number as standard deviation (sigma) is generated and used. 
+            There is no use in normalizing the irf, since it will be normalized to an integral of one anyway.
 - `num_exponents::Int=1`: The number of exponential components to fit.
 - `fixed_tau::Bool=true`: Fix the lifetime values.
 - `fixed_offset::Bool=true`: Fix the offset values.
 - `amp_positive::Bool=true`: Fix the amplitudes to be positive.
 - `tau_start::Union{Nothing, Array{Float32, 5}}=nothing`: The starting lifetime values. Need to be oriented along dimension 5 for multiple exponentials
+                If `nothing` is supplied, it will be computed from the maximum of the data.
 - `global_tau::Bool=true`: Use a global lifetime value.
 - `off_start::Union{Nothing, Float32}=nothing`: The starting offset value.
 - `amp_start::Union{Nothing, Array{Float32, 4}}=nothing`: The starting amplitude values.
-- `t0_start::Union{Nothing, Float32}=nothing`: The starting time value.
+- `t0_start::Union{Nothing, Float32}=nothing`: The starting time value with respect to the `irf`. If `nothing` is provided and an `irf` was provided, it will be determined from the maximum location of the irf.
 - `all_start::Union{Nothing, NamedTuple}=nothing`: The starting values for all parameters. If this is given, other starting values (tau_start, off_start, amp_start, t0_start) are ignored.
 - `bgnoise::Float32=2f0`: The background noise level.
+- `period`::Union{Nothing, Float32}=nothing`: The wrap around period in time bins. Default correponds to the given time bins.
 
 """
 function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson, iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
-                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0)
+                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0, period=nothing)
     any(isnan, to_fit) && error("NaN in data");
     if !isnothing(all_start)
         tau_start=all_start.τs
@@ -340,6 +354,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
     to_fit_no_offset = nothing
     # amp_start = maximum(to_fit, dims=(3,4,5)) # ones(Float32, (size(to_fit)[1:3]...,1,1))
     mytimes = axes(to_fit, 4).-1
+    period = (isnothing(period)) ? mytimes[end] : period
 
     if isnothing(t0_start)
         t0_start = nothing # for decay-only fits
@@ -359,7 +374,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
             @show size(amp_start)
             all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
             # @show all_start
-            println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes; stat = stat, bgnoise=bgnoise))
+            println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes, period; stat = stat, bgnoise=bgnoise))
         end
         to_fit = to_fit ./ scale_factor
         amp_start = amp_start ./ scale_factor
@@ -379,7 +394,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
     end
     all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
 
-    bare, res, fit = do_fit(to_fit, all_start; mytimes=mytimes, iterations=iterations, stat=stat, verbose=verbose, irf=irf, fixed_tau=fixed_tau, bgnoise=bgnoise);
+    bare, res, fit = do_fit(to_fit, all_start; mytimes=mytimes, period=period, iterations=iterations, stat=stat, verbose=verbose, irf=irf, fixed_tau=fixed_tau, bgnoise=bgnoise);
 
     if use_cuda
         fit = Array(fit)
@@ -401,7 +416,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         irf = isnothing(irf) ? nothing : Array(irf)
         mytimes = Array(mytimes)
         if (verbose)
-            println("Final loss (undoing scale): ", get_fwd_val(to_fit, res, irf, mytimes; stat = stat, bgnoise=bgnoise))
+            println("Final loss (undoing scale): ", get_fwd_val(to_fit, res, irf, mytimes, period; stat = stat, bgnoise=bgnoise))
         end
     end
 
