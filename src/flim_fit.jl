@@ -1,5 +1,6 @@
 export flim_fit, get_tau
 export ScaleStdDev, ScaleMaximum, ScaleMean, ScaleIQR, ScaleNorm, ScaleQ10
+export broadcast_mask, fill_into_mask, get_summask
 
 """
     get_time_max(data)
@@ -252,9 +253,79 @@ has_nan(x) = any(isnan, x)
 is_pos(x) = all(x .>= 0)
 
 """
+    broadcast_mask(tomask, mask)
+
+Applies a `mask` to the array `tomask` in broadcased way.
+For all singleton dimensions in mask, the mask will be applied.
+All pixels masked in this way along a non-singleton dimension of the mask will be accumulated in the first non-singleton dimension of the mask.
+
+
+# arguments
++ `tomask`: An array to apply the mask to
++ `mask`: A mask with a few trailing singleton dimensions
+
+# Example
+```julia
+julia> mymask = (rand(10,1,1,40).>0.5);
+julia> sum(mymask)
+julia> masked = broadcast_mask(rand(10,20,30,40), mymask);
+julia> size(masked)
+[209, 20, 30, 1]
+```
+"""
+function broadcast_mask(tomask, mask)
+    # @assert ndims(tomask) == ndims(mask)
+    maxdims = max(ndims(tomask), ndims(mask))
+
+    bmask = broadcast((m, _) -> m, mask, tomask)
+
+    firstdim = findfirst(!=(1), size(mask))
+    firstdim === nothing && error("mask must have a non-singleton dimension")
+
+    outsize = ntuple(maxdims) do d
+        if d == firstdim
+            count(mask)
+        elseif d > firstdim && size(mask,d) != 1
+            1
+        else
+            size(tomask,d)
+        end
+    end
+
+    return reshape(tomask[bmask], Tuple(outsize))
+end
+
+function fill_into_mask(data_in_mask, mask)
+    maxdims = max(ndims(data_in_mask), ndims(mask))
+    
+    firstdim = findfirst(!=(1), size(mask))
+    firstdim === nothing && error("mask must have a non-singleton dimension")
+
+    # reconstruct the original full size
+    fullsize = ntuple(d -> (d == firstdim) ? size(mask, d) :   # number of selected pixels
+            max(size(data_in_mask,d), size(mask,d)), maxdims)
+
+    bmask = broadcast((m, _) -> m, mask, zeros(Bool, fullsize))
+
+    out = similar(data_in_mask, fullsize)
+    fill!(out, zero(eltype(out)))
+
+    out[bmask] .= vec(data_in_mask)
+
+    return out
+end
+
+function get_summask(to_fit, rel_threshold)
+    summask = sum(to_fit,dims=4:ndims(to_fit))
+    summask = summask .> (rel_threshold * maximum(summask))
+    return summask
+end
+
+"""
     FLIM_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson,
                     iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
-                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0)
+                    tau_start=nothing, global_tau=true, off_start=nothing, 
+                    amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0, rel_threshold=nothing)
 
 Fit the FLIM data `measured` with a (multi-)exponential decay model.
 The function returns the fit parameters and the fit itself.
@@ -282,10 +353,42 @@ All results are in time bins as temporal units.
 - `all_start::Union{Nothing, NamedTuple}=nothing`: The starting values for all parameters. If this is given, other starting values (tau_start, off_start, amp_start, t0_start) are ignored.
 - `bgnoise::Float32=2f0`: The background noise level.
 - `period`::Union{Nothing, Float32}=nothing`: The wrap around period in time bins. Default correponds to the given time bins.
+- `rel_threshold::Union{Nothing, Float32}=nothing`:  a threshold to define to which data the fit is applied.
 
 """
 function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson, iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
-                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0, period=nothing)
+                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0, period=nothing, rel_threshold=nothing)
+    # check the rel_threshold parameter and call flim_fit again
+    if !isnothing(rel_threshold)
+        summask = get_summask(to_fit, rel_threshold) 
+        if (verbose)
+            println("mask with $(sum(summask)) pixel applied, fraction: $(sum(summask)/length(summask)) ")
+        end
+        to_fit = broadcast_mask(to_fit, summask)
+        if !isnothing(amp_start)
+            amp_start = broadcast_mask(to_fit, summask)
+        end
+        if !isnothing(all_start)
+            @show size(all_start[:amps])
+            @show size(summask)
+            all_start = merge(all_start, (amps=broadcast_mask(all_start[:amps], summask),))
+            if (!global_tau)
+                all_start = merge(all_start, (amps=fill_into_mask(all_start[:τs], summask),))
+            end
+        end
+        @show size(to_fit)
+        res, fitres =  flim_fit(to_fit; scale_factor=scale_factor, use_cuda=use_cuda, verbose=verbose, stat=stat, iterations=iterations, irf=irf, 
+                    num_exponents=num_exponents, fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive,
+                    tau_start=tau_start, global_tau=global_tau, off_start=off_start, amp_start=amp_start, t0_start=t0_start, all_start=all_start, bgnoise=bgnoise, period=period, rel_threshold=nothing)
+
+        res = merge(res, (amps=fill_into_mask(res[:amps], summask),))
+        fitres = fill_into_mask(fitres, summask)
+        if (!global_tau)
+            res = merge(res, (amps=fill_into_mask(res[:τs], summask),))
+        end
+        return res, fitres
+    end
+
     any(isnan, to_fit) && error("NaN in data");
     if !isnothing(all_start)
         tau_start=all_start.τs
@@ -371,7 +474,6 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         scale_factor = Float32.(scale_factor)
         println("scale factor is: $(scale_factor)")
         if (verbose)
-            @show size(amp_start)
             all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
             # @show all_start
             println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes, period; stat = stat, bgnoise=bgnoise))
@@ -382,6 +484,8 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
     end
 
     if use_cuda
+        CUDA.reclaim()
+
         to_fit = CuArray(to_fit)
         off_start = CuArray([off_start])
         tau_start = CuArray(tau_start)
